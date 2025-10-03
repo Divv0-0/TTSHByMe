@@ -2,53 +2,51 @@ import streamlit as st
 import pandas as pd
 from ortools.sat.python import cp_model
 
-st.title("TIMETABLE GENERATOR")
+st.title("Timetable Generator (Interactive Input)")
 
-# ------------------- Upload Files -------------------
-teachers_file = st.file_uploader("Upload Teachers CSV/XLSX", type=["csv","xlsx"])
-subjects_file = st.file_uploader("Upload Subjects CSV/XLSX", type=["csv","xlsx"])
-classes_file = st.file_uploader("Upload Classes CSV/XLSX", type=["csv","xlsx"])
+# ------------------- Teacher Input -------------------
+st.header("Enter Teachers")
+num_teachers = st.number_input("Number of teachers", min_value=1, max_value=20, value=3)
+teachers = []
+for i in range(num_teachers):
+    name = st.text_input(f"Teacher {i+1} Name", key=f"t_name_{i}")
+    subjects = st.text_input(f"Subjects handled by {name} (comma separated)", key=f"t_subj_{i}")
+    teachers.append({
+        "id": i,
+        "name": name,
+        "subjects": [s.strip() for s in subjects.split(",")] if subjects else []
+    })
 
-def load_file(file):
-    if file.name.endswith(".csv"):
-        return pd.read_csv(file)
-    else:
-        return pd.read_excel(file)
+# ------------------- Subject Input -------------------
+st.header("Enter Subjects")
+num_subjects = st.number_input("Number of subjects", min_value=1, max_value=20, value=3)
+subjects = []
+for i in range(num_subjects):
+    name = st.text_input(f"Subject {i+1} Name", key=f"s_name_{i}")
+    hours = st.number_input(f"Hours per week for {name}", min_value=1, max_value=40, value=5, key=f"s_hours_{i}")
+    subjects.append({
+        "id": i,
+        "name": name,
+        "hours": hours
+    })
 
-teachers_df = load_file(teachers_file) if teachers_file else None
-subjects_df = load_file(subjects_file) if subjects_file else None
-classes_df = load_file(classes_file) if classes_file else None
-
-# ------------------- Column Mapping -------------------
-if teachers_df is not None:
-    st.subheader("Map Teacher Columns")
-    teacher_name_col = st.selectbox("Select Teacher Name column", teachers_df.columns, key="t_name")
-    teacher_subjects_col = st.selectbox("Select Subjects Handled column", teachers_df.columns, key="t_subj")
-    if st.checkbox("Preview Teachers", key="show_teacher"):
-        st.dataframe(teachers_df.head())
-
-if subjects_df is not None:
-    st.subheader("Map Subject Columns")
-    subject_name_col = st.selectbox("Select Subject Name column", subjects_df.columns, key="s_name")
-    subject_hours_col = st.selectbox("Select Subject Hours column", subjects_df.columns, key="s_hours")
-    if st.checkbox("Preview Subjects", key="show_subjects"):
-        st.dataframe(subjects_df.head())
-
-if classes_df is not None:
-    st.subheader("Map Class Column")
-    class_col = st.selectbox("Select Class Name column", classes_df.columns, key="c_name")
-    if st.checkbox("Preview Classes", key="show_classes"):
-        st.dataframe(classes_df.head())
+# ------------------- Class Input -------------------
+st.header("Enter Classes")
+num_classes = st.number_input("Number of classes", min_value=1, max_value=10, value=3)
+classes = []
+for i in range(num_classes):
+    cname = st.text_input(f"Class {i+1} Name", key=f"c_name_{i}")
+    classes.append(cname)
 
 # ------------------- Days & Periods -------------------
 days = st.multiselect(
     "Select Teaching Days",
     ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
-    default=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"]
+    default=["Monday","Tuesday","Wednesday","Thursday","Friday"]
 )
 periods_per_day = st.number_input("Number of periods per day", min_value=1, max_value=12, value=6)
 
-# ------------------- Timetable Generator -------------------
+# ------------------- Timetable Solver -------------------
 def generate_timetable(classes, subjects, teachers, days, periods_per_day):
     model = cp_model.CpModel()
     class_subject = {}
@@ -57,7 +55,7 @@ def generate_timetable(classes, subjects, teachers, days, periods_per_day):
             for p in range(periods_per_day):
                 class_subject[(c,d,p)] = model.NewIntVar(0, len(subjects)-1, f'{c}_{d}_{p}')
 
-    # Each subject required hours per class
+    # subject hour constraints
     for c in classes:
         for subj in subjects:
             subj_id = subj["id"]
@@ -71,11 +69,11 @@ def generate_timetable(classes, subjects, teachers, days, periods_per_day):
                     indicators.append(is_subj)
             model.Add(sum(indicators) == required)
 
-    # Teacher clash prevention
+    # teacher clash constraint
     for d in range(len(days)):
         for p in range(periods_per_day):
             for t in teachers:
-                t_subj_ids = t["subjects"]
+                t_subj_ids = [s["id"] for s in subjects if s["name"] in t["subjects"]]
                 indicators = []
                 for c in classes:
                     for subj_id in t_subj_ids:
@@ -103,46 +101,14 @@ def generate_timetable(classes, subjects, teachers, days, periods_per_day):
                     })
     else:
         st.error("No feasible timetable found")
-    
+
     return pd.DataFrame(timetable)
 
 # ------------------- Generate Button -------------------
 if st.button("Generate Timetable"):
-    if teachers_df is None or subjects_df is None or classes_df is None:
-        st.error("Upload all three files first!")
-    else:
-        # Prepare subjects
-        subjects = []
-        for i, row in subjects_df.iterrows():
-            subjects.append({
-                "id": i,
-                "name": row[subject_name_col],
-                "hours": int(row[subject_hours_col])
-            })
-
-        # Prepare classes
-        classes = classes_df[class_col].tolist()
-
-        # Prepare teachers (map by subject name)
-        teachers = []
-        for i, row in teachers_df.iterrows():
-            handled = [s.strip() for s in row[teacher_subjects_col].split(",")]
-            subj_ids = [subj["id"] for subj in subjects if subj["name"] in handled]
-            teachers.append({
-                "id": i,
-                "name": row[teacher_name_col],
-                "subjects": subj_ids
-            })
-
-        # Validate subjects have teachers
-        for subj in subjects:
-            if not any(subj["id"] in t["subjects"] for t in teachers):
-                st.warning(f"No teacher available for subject: {subj['name']}")
-
-        # Generate timetable
-        df_tt = generate_timetable(classes, subjects, teachers, days, periods_per_day)
+    df_tt = generate_timetable(classes, subjects, teachers, days, periods_per_day)
+    if not df_tt.empty:
         st.dataframe(df_tt)
-
-        # Download button
         csv = df_tt.to_csv(index=False).encode("utf-8")
         st.download_button("Download as CSV", csv, "timetable.csv", "text/csv")
+
